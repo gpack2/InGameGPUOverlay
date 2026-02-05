@@ -56,7 +56,3 @@ No AMD SDK install is required; ADL is used via the driver’s **atiadlxx.dll**.
 - **AMD Radeon** only (consumer GPUs). ADL is used for usage %, clock, and temperature; VRAM comes from DXGI.
 - **DX11** games only. DX12/Vulkan are not supported.
 - **Steam** games that use DX11 are supported; inject into the game process after the game is running.
-
-## License
-
-Project code is provided as-is. AMD ADL is used at runtime from the driver; see [AMD GPUOpen](https://gpuopen.com/adl/) for ADL terms.
