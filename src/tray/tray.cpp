@@ -12,7 +12,6 @@
 
 namespace gpuoverlay {
 
-#define WM_TRAYICON (WM_USER + 1)
 #define IDC_LIST      2001
 #define IDC_INJECT     2002
 #define IDC_CANCEL     2003
@@ -25,7 +24,7 @@ bool tray_init(HWND hwnd, const wchar_t* tip) {
   s_nid.hWnd = hwnd;
   s_nid.uID = 1;
   s_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-  s_nid.uCallbackMessage = WM_TRAYICON;
+  s_nid.uCallbackMessage = kTrayIconMessage;
   s_nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
   if (tip) wcsncpy_s(s_nid.szTip, tip, _TRUNCATE);
 
@@ -43,9 +42,9 @@ void tray_shutdown() {
 
 void tray_show_menu(HWND hwnd, int x, int y) {
   HMENU menu = CreatePopupMenu();
-  AppendMenuW(menu, MF_STRING, ID_TRAY_INJECT, L"Inject into process...");
+  AppendMenuW(menu, MF_STRING, kTrayInjectCommand, L"Inject into process...");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Exit");
+  AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");
 
   SetForegroundWindow(hwnd);
   UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, x, y, 0, hwnd, nullptr);
@@ -101,7 +100,6 @@ static LRESULT CALLBACK InjectWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
       }
       break;
     case WM_DESTROY:
-      PostQuitMessage(0);
       return 0;
   }
   return DefWindowProcW(hwnd, msg, wParam, lParam);

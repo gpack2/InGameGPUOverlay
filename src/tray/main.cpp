@@ -19,30 +19,30 @@ std::wstring get_dll_path() {
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
   switch (msg) {
-    case WM_TRAYICON:
+    case gpuoverlay::kTrayIconMessage:
       if (lParam == WM_RBUTTONUP) {
         POINT pt;
         GetCursorPos(&pt);
-        tray_show_menu(hwnd, pt.x, pt.y);
+        gpuoverlay::tray_show_menu(hwnd, pt.x, pt.y);
       }
       return 0;
     case WM_COMMAND:
-      if (LOWORD(wParam) == ID_TRAY_INJECT) {
+      if (LOWORD(wParam) == gpuoverlay::kTrayInjectCommand) {
         g_dllPath = get_dll_path();
         if (g_dllPath.empty()) {
           MessageBoxW(hwnd, L"GPUOverlayHook.dll not found next to executable.", L"GPU Overlay", MB_OK | MB_ICONERROR);
         } else {
-          show_inject_dialog(hwnd, g_dllPath);
+          gpuoverlay::show_inject_dialog(hwnd, g_dllPath);
         }
         return 0;
       }
-      if (LOWORD(wParam) == ID_TRAY_EXIT) {
+      if (LOWORD(wParam) == gpuoverlay::kTrayExitCommand) {
         PostQuitMessage(0);
         return 0;
       }
       break;
     case WM_DESTROY:
-      tray_shutdown();
+      gpuoverlay::tray_shutdown();
       PostQuitMessage(0);
       return 0;
   }
@@ -65,7 +65,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
                               nullptr, nullptr, hInstance, nullptr);
   if (!hwnd) return 1;
 
-  if (!tray_init(hwnd, L"GPU Overlay - Right-click to inject")) {
+  if (!gpuoverlay::tray_init(hwnd, L"GPU Overlay - Right-click to inject")) {
     DestroyWindow(hwnd);
     return 1;
   }

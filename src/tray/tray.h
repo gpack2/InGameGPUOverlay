@@ -4,10 +4,11 @@
 #include <functional>
 #include <string>
 
-#define ID_TRAY_INJECT 1001
-#define ID_TRAY_EXIT    1002
-
 namespace gpuoverlay {
+
+inline constexpr UINT kTrayIconMessage = WM_APP + 1;
+inline constexpr UINT kTrayInjectCommand = 1001;
+inline constexpr UINT kTrayExitCommand = 1002;
 
 // Create tray icon. callback(id) when menu item selected: 1 = Inject, 2 = Exit.
 bool tray_init(HWND hwnd, const wchar_t* tip);
