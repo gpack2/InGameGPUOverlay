@@ -3,7 +3,9 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <windows.h>
-#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <utility>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -15,23 +17,44 @@ namespace {
 typedef HRESULT(WINAPI* PresentFn)(IDXGISwapChain*, UINT, UINT);
 
 PresentFn g_originalPresent = nullptr;
-std::atomic<bool> g_swapChainHooked{false};
+void* g_presentAddress = nullptr;
 PresentCallback g_presentCallback;
-
-ID3D11Device* g_device = nullptr;
-ID3D11DeviceContext* g_context = nullptr;
+std::mutex g_callbackMutex;
+std::condition_variable g_callbackIdle;
+unsigned int g_activePresentCalls = 0;
 
 HRESULT WINAPI hooked_present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
-  if (g_presentCallback && pSwapChain) {
-    if (!g_device || !g_context) {
-      pSwapChain->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void**>(&g_device));
-      if (g_device)
-        g_device->GetImmediateContext(&g_context);
-    }
-    if (g_device && g_context)
-      g_presentCallback(pSwapChain, g_device, g_context);
+  PresentCallback callback;
+  {
+    std::lock_guard<std::mutex> lock(g_callbackMutex);
+    ++g_activePresentCalls;
+    callback = g_presentCallback;
   }
-  return g_originalPresent(pSwapChain, SyncInterval, Flags);
+
+  if (callback && pSwapChain) {
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* context = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device),
+                                        reinterpret_cast<void**>(&device))) && device) {
+      device->GetImmediateContext(&context);
+      if (context) {
+        try {
+          callback(pSwapChain, device, context);
+        } catch (...) {
+          // Never allow overlay code to unwind through the game's Present call.
+        }
+        context->Release();
+      }
+      device->Release();
+    }
+  }
+
+  const HRESULT result = g_originalPresent(pSwapChain, SyncInterval, Flags);
+  {
+    std::lock_guard<std::mutex> lock(g_callbackMutex);
+    if (--g_activePresentCalls == 0) g_callbackIdle.notify_all();
+  }
+  return result;
 }
 
 }  // namespace
@@ -46,7 +69,10 @@ static void* get_present_address() {
   if (!RegisterClassExW(&wc)) return nullptr;
 
   HWND hwnd = CreateWindowExW(0, L"GPUOverlayDummy", nullptr, WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, wc.hInstance, nullptr);
-  if (!hwnd) return nullptr;
+  if (!hwnd) {
+    UnregisterClassW(L"GPUOverlayDummy", wc.hInstance);
+    return nullptr;
+  }
 
   DXGI_SWAP_CHAIN_DESC sd = {};
   sd.BufferCount = 1;
@@ -64,10 +90,15 @@ static void* get_present_address() {
   D3D_FEATURE_LEVEL fl = {};
   typedef HRESULT(WINAPI* CreateFn)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT, UINT, const DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
   HMODULE d3d11 = GetModuleHandleW(L"d3d11.dll");
-  if (!d3d11) { DestroyWindow(hwnd); return nullptr; }
+  if (!d3d11) {
+    DestroyWindow(hwnd);
+    UnregisterClassW(L"GPUOverlayDummy", wc.hInstance);
+    return nullptr;
+  }
   auto createFn = reinterpret_cast<CreateFn>(GetProcAddress(d3d11, "D3D11CreateDeviceAndSwapChain"));
   if (!createFn || FAILED(createFn(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &sd, &sc, &dev, &fl, &ctx))) {
     DestroyWindow(hwnd);
+    UnregisterClassW(L"GPUOverlayDummy", wc.hInstance);
     return nullptr;
   }
   void** vtable = *reinterpret_cast<void***>(sc);
@@ -94,22 +125,30 @@ bool install_dx11_hook() {
     return false;
   }
   if (MH_EnableHook(presentAddr) != MH_OK) {
+    MH_RemoveHook(presentAddr);
     MH_Uninitialize();
     return false;
   }
-  g_swapChainHooked = true;
+  g_presentAddress = presentAddr;
   return true;
 }
 
 void remove_dx11_hook() {
-  MH_DisableHook(MH_ALL_HOOKS);
+  if (!g_presentAddress) return;
+  MH_DisableHook(g_presentAddress);
+  {
+    std::unique_lock<std::mutex> lock(g_callbackMutex);
+    g_presentCallback = nullptr;
+    g_callbackIdle.wait(lock, [] { return g_activePresentCalls == 0; });
+  }
+  MH_RemoveHook(g_presentAddress);
   MH_Uninitialize();
-  g_swapChainHooked = false;
-  if (g_context) { g_context->Release(); g_context = nullptr; }
-  if (g_device) { g_device->Release(); g_device = nullptr; }
+  g_presentAddress = nullptr;
+  g_originalPresent = nullptr;
 }
 
 void set_present_callback(PresentCallback cb) {
+  std::lock_guard<std::mutex> lock(g_callbackMutex);
   g_presentCallback = std::move(cb);
 }
 
