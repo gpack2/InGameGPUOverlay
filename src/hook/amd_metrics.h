@@ -7,7 +7,9 @@ struct GPUMetrics {
   double vramUsageGB = 0.0;  // Dedicated VRAM used (GB)
   int engineClockMHz = 0;    // GPU core clock
   int temperatureC = 0;      // GPU temperature Celsius
-  bool valid = false;
+  bool gpuUsageValid = false;
+  bool engineClockValid = false;
+  bool temperatureValid = false;
 };
 
 // Uses AMD ADL (atiadlxx.dll, shipped with Radeon drivers).
