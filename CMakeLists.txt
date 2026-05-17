@@ -2,10 +2,12 @@ cmake_minimum_required(VERSION 3.16)
 project(GPUOverlay LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Windows only
 if(NOT WIN32)
-  message(FATAL_ERROR "GPUOverlay is a Windows-only application (AMD Radeon + DX11).")
+  message(FATAL_ERROR "GPUOverlay is a Windows-only DirectX 11 application.")
 endif()
 
 # Tray application (executable)
@@ -41,6 +43,7 @@ target_link_libraries(GPUOverlayHook PRIVATE
   d3d11
   dxgi
   d3dcompiler
+  gdi32
   user32
   kernel32
 )
@@ -56,7 +59,13 @@ FetchContent_MakeAvailable(minhook)
 target_include_directories(GPUOverlayHook PRIVATE ${minhook_SOURCE_DIR}/include)
 target_link_libraries(GPUOverlayHook PRIVATE minhook)
 
+if(MSVC)
+  target_compile_options(GPUOverlay PRIVATE /W4 /permissive-)
+  target_compile_options(GPUOverlayHook PRIVATE /W4 /permissive-)
+endif()
+
 # Copy hook DLL next to exe for easy injection
+add_dependencies(GPUOverlay GPUOverlayHook)
 add_custom_command(TARGET GPUOverlay POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:GPUOverlayHook> $<TARGET_FILE_DIR:GPUOverlay>
 )

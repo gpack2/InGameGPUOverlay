@@ -1,0 +1,34 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        configuration: [Debug, Release]
+        platform: [x64, Win32]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A ${{ matrix.platform }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.configuration }} --parallel
+
+      - name: Upload binaries
+        if: matrix.configuration == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPUOverlay-windows-${{ matrix.platform }}
+          path: |
+            build/Release/GPUOverlay.exe
+            build/Release/GPUOverlayHook.dll
