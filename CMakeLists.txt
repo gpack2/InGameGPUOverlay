@@ -21,6 +21,7 @@ target_include_directories(GPUOverlay PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
+target_compile_definitions(GPUOverlay PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(GPUOverlay PRIVATE
   shell32
   user32
@@ -39,6 +40,7 @@ target_include_directories(GPUOverlayHook PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
+target_compile_definitions(GPUOverlayHook PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(GPUOverlayHook PRIVATE
   d3d11
   dxgi
