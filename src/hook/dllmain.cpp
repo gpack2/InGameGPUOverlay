@@ -1,10 +1,12 @@
 #include "hook/dx11_hook.h"
 #include "hook/overlay_renderer.h"
-#include "hook/amd_metrics.h"
+#include "hook/telemetry_provider.h"
+#include "common/overlay_config.h"
 #include <windows.h>
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <memory>
 
 namespace {
 
@@ -32,17 +34,22 @@ DWORD WINAPI hook_thread(LPVOID) {
                          GET_MODULE_HANDLE_EX_FLAG_PIN,
                      reinterpret_cast<LPCWSTR>(&g_running), &pinnedModule);
 
+  const std::wstring configPath = gpuoverlay::default_config_path(pinnedModule);
+  gpuoverlay::ensure_overlay_config(configPath);
+  gpuoverlay::OverlayConfig config = gpuoverlay::load_overlay_config(configPath);
+
   g_fpsTime = std::chrono::steady_clock::now();
 
-  gpuoverlay::AMDMetrics amd;
-  // ADL is optional: non-AMD systems still get FPS and DXGI VRAM usage.
-  amd.init();
-
   gpuoverlay::OverlayRenderer overlay;
+  std::unique_ptr<gpuoverlay::TelemetryProvider> telemetry;
   bool overlayInited = false;
   ID3D11Device* activeDevice = nullptr;
   gpuoverlay::GPUMetrics cachedMetrics;
   auto nextMetricsUpdate = std::chrono::steady_clock::time_point::min();
+  auto nextConfigUpdate = std::chrono::steady_clock::time_point::min();
+  gpuoverlay::HotkeyState toggleHotkeyState;
+  gpuoverlay::HotkeyState positionHotkeyState;
+  bool overlayVisible = true;
   std::mutex renderMutex;
 
   gpuoverlay::set_present_callback([&](IDXGISwapChain* swapChain, ID3D11Device* device, ID3D11DeviceContext* context) {
@@ -52,24 +59,40 @@ DWORD WINAPI hook_thread(LPVOID) {
 
     if (!overlayInited || activeDevice != device) {
       overlay.shutdown();
+      if (telemetry) telemetry->shutdown();
+      telemetry = gpuoverlay::create_telemetry_provider(device);
       overlayInited = overlay.init(device, context, swapChain);
       activeDevice = overlayInited ? device : nullptr;
     }
     if (!overlayInited) return;
 
     const auto now = std::chrono::steady_clock::now();
+    if (now >= nextConfigUpdate) {
+      config = gpuoverlay::load_overlay_config(configPath);
+      nextConfigUpdate = now + std::chrono::seconds(1);
+    }
+    if (gpuoverlay::hotkey_pressed(config.toggleHotkey, toggleHotkeyState))
+      overlayVisible = !overlayVisible;
+    if (gpuoverlay::hotkey_pressed(config.cyclePositionHotkey,
+                                   positionHotkeyState)) {
+      config.position = gpuoverlay::next_position(config.position);
+      gpuoverlay::save_overlay_config(configPath, config);
+    }
+
+    fps_tick();
+    if (!overlayVisible) return;
+
     if (now >= nextMetricsUpdate) {
-      amd.update(device, cachedMetrics);
+      if (telemetry) telemetry->update(device, cachedMetrics);
+      gpuoverlay::update_dxgi_memory(device, cachedMetrics);
       nextMetricsUpdate = now + std::chrono::milliseconds(250);
     }
-    fps_tick();
 
-    overlay.render(swapChain, context, cachedMetrics, g_fps.load());
+    overlay.render(swapChain, context, cachedMetrics, g_fps.load(), config);
   });
 
   if (!gpuoverlay::install_dx11_hook()) {
     gpuoverlay::set_present_callback(nullptr);
-    amd.shutdown();
     return 0;
   }
 
@@ -80,7 +103,7 @@ DWORD WINAPI hook_thread(LPVOID) {
   gpuoverlay::remove_dx11_hook();
   gpuoverlay::set_present_callback(nullptr);
   overlay.shutdown();
-  amd.shutdown();
+  if (telemetry) telemetry->shutdown();
   return 0;
 }
 

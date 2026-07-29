@@ -1,29 +1,19 @@
 #pragma once
 
+#include "hook/telemetry_provider.h"
+
 namespace gpuoverlay {
 
-struct GPUMetrics {
-  int gpuUsagePercent = 0;   // 0-100
-  double vramUsageGB = 0.0;  // Dedicated VRAM used (GB)
-  int engineClockMHz = 0;    // GPU core clock
-  int temperatureC = 0;      // GPU temperature Celsius
-  bool gpuUsageValid = false;
-  bool engineClockValid = false;
-  bool temperatureValid = false;
-};
-
 // Uses AMD ADL (atiadlxx.dll, shipped with Radeon drivers).
-// VRAM is obtained via DXGI when device is available; other metrics via ADL.
-class AMDMetrics {
+class AMDMetrics final : public TelemetryProvider {
 public:
   AMDMetrics();
-  ~AMDMetrics();
+  ~AMDMetrics() override;
 
-  bool init();
-  void shutdown();
-
-  // Update metrics. Pass current D3D device for VRAM via DXGI; can be null.
-  void update(void* d3d11Device, GPUMetrics& out);
+  bool init(ID3D11Device* device) override;
+  void shutdown() override;
+  void update(ID3D11Device* device, GPUMetrics& out) override;
+  const wchar_t* name() const override { return L"AMD ADL"; }
 
 private:
   struct Impl;

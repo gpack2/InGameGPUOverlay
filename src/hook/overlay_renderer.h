@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/overlay_config.h"
 #include <d3d11.h>
 #include <dxgi.h>
 #include <windows.h>
@@ -18,11 +19,12 @@ public:
   void shutdown();
 
   void render(IDXGISwapChain* swapChain, ID3D11DeviceContext* context,
-              const GPUMetrics& metrics, int fps);
+              const GPUMetrics& metrics, int fps, const OverlayConfig& config);
 
 private:
   bool createResources(ID3D11Device* device, IDXGISwapChain* swapChain);
-  void drawTextQuad(ID3D11DeviceContext* context, int x, int y, int w, int h);
+  void drawTextQuad(ID3D11DeviceContext* context, int x, int y, int w, int h,
+                    float sourceHeight);
 
   ID3D11Device* device_ = nullptr;
   ID3D11DeviceContext* context_ = nullptr;
@@ -38,6 +40,9 @@ private:
   ID3D11Buffer* vertexBuffer_ = nullptr;
   HFONT font_ = nullptr;
   std::wstring lastText_;
+  OverlayColor lastTextColor_;
+  OverlayColor lastBackgroundColor_;
+  bool hasLastColors_ = false;
 
   int lastWidth_ = 0;
   int lastHeight_ = 0;

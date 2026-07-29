@@ -9,6 +9,7 @@ namespace gpuoverlay {
 inline constexpr UINT kTrayIconMessage = WM_APP + 1;
 inline constexpr UINT kTrayInjectCommand = 1001;
 inline constexpr UINT kTrayExitCommand = 1002;
+inline constexpr UINT kTraySettingsCommand = 1003;
 
 // Create tray icon. callback(id) when menu item selected: 1 = Inject, 2 = Exit.
 bool tray_init(HWND hwnd, const wchar_t* tip);

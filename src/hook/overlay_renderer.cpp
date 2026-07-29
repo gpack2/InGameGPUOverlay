@@ -1,10 +1,12 @@
 #include "hook/overlay_renderer.h"
-#include "hook/amd_metrics.h"
+#include "hook/telemetry_provider.h"
+#include <algorithm>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <d3dcompiler.h>
 #include <windows.h>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -255,6 +257,7 @@ bool OverlayRenderer::init(ID3D11Device* device, ID3D11DeviceContext* context, I
 
 void OverlayRenderer::shutdown() {
   lastText_.clear();
+  hasLastColors_ = false;
   if (font_) { DeleteObject(font_); font_ = nullptr; }
   if (vertexBuffer_) { vertexBuffer_->Release(); vertexBuffer_ = nullptr; }
   if (rasterizer_) { rasterizer_->Release(); rasterizer_ = nullptr; }
@@ -270,7 +273,8 @@ void OverlayRenderer::shutdown() {
   if (device_) { device_->Release(); device_ = nullptr; }
 }
 
-void OverlayRenderer::drawTextQuad(ID3D11DeviceContext* context, int x, int y, int w, int h) {
+void OverlayRenderer::drawTextQuad(ID3D11DeviceContext* context, int x, int y,
+                                   int w, int h, float sourceHeight) {
   if (!vs_ || !ps_ || !layout_ || !textSrv_ || !sampler_ || !vertexBuffer_ || !blendState_ || !rasterizer_) return;
 
   float l = (x * 2.0f / lastWidth_) - 1.0f;
@@ -282,8 +286,8 @@ void OverlayRenderer::drawTextQuad(ID3D11DeviceContext* context, int x, int y, i
   Vertex quad[] = {
     { l, t, 0, 0 },
     { r, t, 1, 0 },
-    { l, b, 0, 1 },
-    { r, b, 1, 1 },
+    { l, b, 0, sourceHeight },
+    { r, b, 1, sourceHeight },
   };
   context->UpdateSubresource(vertexBuffer_, 0, nullptr, quad, 0, 0);
 
@@ -301,7 +305,8 @@ void OverlayRenderer::drawTextQuad(ID3D11DeviceContext* context, int x, int y, i
 }
 
 void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* context,
-                             const GPUMetrics& metrics, int fps) {
+                             const GPUMetrics& metrics, int fps,
+                             const OverlayConfig& config) {
   if (!swapChain || !context || !device_ || !textTexture_) return;
 
   int width = 0;
@@ -314,23 +319,51 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
   }
 
   std::wostringstream ss;
-  if (metrics.gpuUsageValid)
-    ss << L"GPU: " << metrics.gpuUsagePercent << L"%\n";
-  else
-    ss << L"GPU: N/A\n";
-  ss << L"VRAM: " << std::fixed << std::setprecision(2) << metrics.vramUsageGB << L" GB\n";
-  ss << L"FPS: " << fps << L"\n";
-  if (metrics.engineClockValid)
-    ss << L"Clock: " << metrics.engineClockMHz << L" MHz\n";
-  else
-    ss << L"Clock: N/A\n";
-  if (metrics.temperatureValid)
-    ss << L"Temp: " << metrics.temperatureC << L" C";
-  else
-    ss << L"Temp: N/A";
+  int lineCount = 0;
+  const auto addLine = [&](const std::wstring& line) {
+    if (lineCount > 0) ss << L'\n';
+    ss << line;
+    ++lineCount;
+  };
+
+  if (config.showGpuUsage) {
+    std::wostringstream line;
+    line << metrics.providerName << L": ";
+    if (metrics.gpuUsageValid) line << metrics.gpuUsagePercent << L'%';
+    else line << L"N/A";
+    addLine(line.str());
+  }
+  if (config.showVram) {
+    std::wostringstream line;
+    line << L"VRAM: ";
+    if (metrics.vramUsageValid)
+      line << std::fixed << std::setprecision(2) << metrics.vramUsageGB << L" GB";
+    else
+      line << L"N/A";
+    addLine(line.str());
+  }
+  if (config.showFps) addLine(L"FPS: " + std::to_wstring(fps));
+  if (config.showClock) {
+    std::wostringstream line;
+    line << L"Clock: ";
+    if (metrics.engineClockValid) line << metrics.engineClockMHz << L" MHz";
+    else line << L"N/A";
+    addLine(line.str());
+  }
+  if (config.showTemperature) {
+    std::wostringstream line;
+    line << L"Temp: ";
+    if (metrics.temperatureValid) line << metrics.temperatureC << L" C";
+    else line << L"N/A";
+    addLine(line.str());
+  }
+  if (lineCount == 0) return;
 
   std::wstring text = ss.str();
-  if (text != lastText_) {
+  const bool colorsChanged = !hasLastColors_ ||
+                             config.textColor != lastTextColor_ ||
+                             config.backgroundColor != lastBackgroundColor_;
+  if (text != lastText_ || colorsChanged) {
     IDXGISurface1* surface = nullptr;
     if (FAILED(textTexture_->QueryInterface(__uuidof(IDXGISurface1),
                                             reinterpret_cast<void**>(&surface))))
@@ -343,12 +376,12 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
     }
 
     RECT rect = { 0, 0, OVERLAY_WIDTH, OVERLAY_HEIGHT };
-    HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
+    HBRUSH bg = CreateSolidBrush(config.backgroundColor.colorref());
     FillRect(hdc, &rect, bg);
     DeleteObject(bg);
 
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(0, 255, 0));
+    SetTextColor(hdc, config.textColor.colorref());
     HGDIOBJ oldFont = SelectObject(hdc, font_);
 
     int y = PADDING;
@@ -366,6 +399,9 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
     surface->ReleaseDC(nullptr);
     surface->Release();
     lastText_ = std::move(text);
+    lastTextColor_ = config.textColor;
+    lastBackgroundColor_ = config.backgroundColor;
+    hasLastColors_ = true;
   }
 
   ID3D11RenderTargetView* backBufferRtv = nullptr;
@@ -390,7 +426,22 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
   context->RSSetViewports(1, &vp);
   context->OMSetRenderTargets(1, &backBufferRtv, nullptr);
 
-  drawTextQuad(context, PADDING, PADDING, OVERLAY_WIDTH, OVERLAY_HEIGHT);
+  const int contentHeight = PADDING * 2 + lineCount * LINE_HEIGHT;
+  const float scale = (std::clamp)(config.scale, 0.5f, 3.0f);
+  const int drawWidth = static_cast<int>(std::lround(OVERLAY_WIDTH * scale));
+  const int drawHeight = static_cast<int>(std::lround(contentHeight * scale));
+  const int margin = static_cast<int>(std::lround(PADDING * scale));
+  int x = margin;
+  int y = margin;
+  if (config.position == OverlayPosition::TopRight ||
+      config.position == OverlayPosition::BottomRight)
+    x = (std::max)(0, width - drawWidth - margin);
+  if (config.position == OverlayPosition::BottomLeft ||
+      config.position == OverlayPosition::BottomRight)
+    y = (std::max)(0, height - drawHeight - margin);
+
+  drawTextQuad(context, x, y, drawWidth, drawHeight,
+               static_cast<float>(contentHeight) / OVERLAY_HEIGHT);
 
   backBufferRtv->Release();
 }

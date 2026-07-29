@@ -1,4 +1,6 @@
 #include "tray/tray.h"
+#include "tray/settings_dialog.h"
+#include "common/overlay_config.h"
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -40,6 +42,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         PostQuitMessage(0);
         return 0;
       }
+      if (LOWORD(wParam) == gpuoverlay::kTraySettingsCommand) {
+        gpuoverlay::show_settings_dialog(hwnd,
+                                         gpuoverlay::default_config_path());
+        return 0;
+      }
       break;
     case WM_DESTROY:
       gpuoverlay::tray_shutdown();
@@ -52,6 +59,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+  gpuoverlay::ensure_overlay_config(gpuoverlay::default_config_path());
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = WndProc;

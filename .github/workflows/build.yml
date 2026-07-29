@@ -25,6 +25,9 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.configuration }} --parallel
 
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.configuration }} --output-on-failure
+
       - name: Upload binaries
         if: matrix.configuration == 'Release'
         uses: actions/upload-artifact@v4

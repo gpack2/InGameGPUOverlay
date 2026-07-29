@@ -43,6 +43,7 @@ void tray_shutdown() {
 void tray_show_menu(HWND hwnd, int x, int y) {
   HMENU menu = CreatePopupMenu();
   AppendMenuW(menu, MF_STRING, kTrayInjectCommand, L"Inject into process...");
+  AppendMenuW(menu, MF_STRING, kTraySettingsCommand, L"Settings...");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");
 
