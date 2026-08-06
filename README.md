@@ -1,62 +1,81 @@
 # GPU Overlay
 
-A **Windows system-tray application** that injects an in-game overlay into DirectX 11 games (including Steam games). FPS and VRAM usage work on any DXGI-compatible GPU; AMD Radeon systems also show usage, clock, and temperature through ADL.
+A Windows system-tray application that injects a configurable GPU overlay into DirectX 11 games. It supports AMD, NVIDIA, and Intel telemetry, with a DXGI fallback for other GPUs.
 
-## Displayed metrics
+## Metrics
 
-- **GPU usage** (%)
-- **VRAM usage** (GB)
-- **FPS**
-- **GPU clock speed** (MHz)
-- **GPU temperature** (°C)
+- GPU usage
+- VRAM usage
+- FPS
+- GPU clock
+- GPU temperature
+
+Each metric can be enabled or disabled independently.
 
 ## Requirements
 
-- **Windows 10/11** (the overlay build must match the game's 32/64-bit architecture)
-- A **DirectX 11-compatible GPU**
-- **AMD Radeon Software Adrenalin** for AMD-specific usage, clock, and temperature metrics
-- **DirectX 11** game (e.g. many Steam titles using DX11)
+- Windows 10 or 11
+- A DirectX 11 game and compatible GPU
+- A build matching the game's architecture (`x64` or `Win32`)
+- Current GPU drivers for vendor telemetry
 
-## Build (Windows)
+Intel vendor telemetry is available in x64 builds. Win32 Intel builds fall back to FPS and DXGI VRAM usage.
 
-1. Install **Visual Studio 2019 or 2022** with "Desktop development with C++" and **CMake**.
-2. Open a **Developer Command Prompt** (or ensure `cl` and `cmake` are in PATH).
-3. From the project root:
+## Build
+
+Install Visual Studio 2019 or 2022 with Desktop development with C++ and CMake. From a Developer Command Prompt:
 
 ```bat
-mkdir build
-cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-Use `-A Win32` instead when targeting a 32-bit game.
+Use `-A Win32` for a 32-bit game. The build downloads pinned versions of MinHook, the official NVIDIA NVAPI SDK, and the official Intel Graphics Control Library headers.
 
-4. Run from `build\Release\`:
-   - **GPUOverlay.exe** – tray app
-   - **GPUOverlayHook.dll** – copied next to the exe by the build
+The release binaries are written to `build\Release\`. `GPUOverlayHook.dll` is copied next to `GPUOverlay.exe` automatically.
 
 ## Usage
 
-1. Start **GPUOverlay.exe**. A GPU Overlay icon appears in the system tray.
-2. **Right-click** the tray icon → **Inject into process...**
-3. In the list, select your **game process** (e.g. the game’s `.exe`) and click **Inject**.
-4. If needed, run GPUOverlay **as Administrator** if injection fails.
-5. The overlay appears in the **top-left** of the game when it uses **DirectX 11** (typical for many Steam DX11 games).
+1. Start `GPUOverlay.exe`.
+2. Right-click its system-tray icon and choose **Settings...** to configure the overlay.
+3. Choose **Inject into process...**, select the running game, and click **Inject**.
+4. Run the tray app as Administrator if injection into the target process is denied.
+
+Do not inject the overlay into anti-cheat-protected games unless the game's policies explicitly allow it.
+
+## Configuration
+
+Settings are saved in `GPUOverlay.ini` next to the executable and hook DLL. An injected overlay reloads the file once per second, so most changes apply without reinjection.
+
+The settings dialog controls:
+
+- Position: any screen corner
+- Scale: `0.5` through `3.0`
+- Text and background colors in `#RRGGBB` format
+- Visible metrics
+- Toggle and cycle-position hotkeys
+
+The default hotkeys are `F11` to show or hide the overlay and `F10` to cycle its position. Hotkeys may include `Ctrl`, `Alt`, or `Shift` plus A-Z, 0-9, F1-F24, or a navigation key; for example, `Ctrl+Shift+F11`.
+
+## Telemetry providers
+
+The hook selects a telemetry provider from the DXGI adapter used by the game's swap chain:
+
+| GPU | Provider | Usage | Clock | Temperature | VRAM |
+| --- | --- | --- | --- | --- | --- |
+| AMD | ADL | Yes | Yes | Yes | DXGI |
+| NVIDIA | NVAPI | Yes | Yes | Yes | DXGI |
+| Intel x64 | IGCL | Yes | Yes | Yes | DXGI |
+| Other / unavailable provider | DXGI fallback | N/A | N/A | N/A | Yes |
+
+NVIDIA and Intel adapter handles are matched to the game's DXGI adapter by LUID. Vendor APIs are supplied by the installed display driver; no separate runtime SDK installation is required.
 
 ## How it works
 
-- **Tray app** – Lists running processes and injects **GPUOverlayHook.dll** into the chosen process.
-- **Hook DLL** – Loads inside the game process, hooks **IDXGISwapChain::Present** (DX11), and each frame:
-  - Reads GPU metrics via **AMD ADL** (atiadlxx.dll, shipped with Radeon drivers) and **DXGI** for VRAM.
-  - Counts **Present** calls for FPS.
-  - Renders a small text overlay on the back buffer before present.
+- The tray app lists running processes and injects `GPUOverlayHook.dll`.
+- The hook intercepts `IDXGISwapChain::Present` for DirectX 11.
+- A provider interface collects vendor metrics while DXGI reports local video-memory use.
+- The renderer preserves and restores the game's Direct3D 11 state around each overlay draw.
 
-No AMD SDK install is required; ADL is used via the driver’s **atiadlxx.dll**.
-
-## Compatibility
-
-- FPS and VRAM usage work on any DXGI-compatible GPU.
-- AMD Radeon consumer GPUs additionally report usage %, clock, and temperature through ADL. Those fields display `N/A` on other GPUs.
-- **DX11** games only. DX12/Vulkan are not supported.
-- **Steam** games that use DX11 are supported; inject into the game process after the game is running.
+DirectX 12 and Vulkan are not supported.
