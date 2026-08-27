@@ -12,6 +12,7 @@ endif()
 
 # Tray application (executable)
 add_executable(GPUOverlay WIN32
+  src/common/diagnostics.cpp
   src/common/overlay_config.cpp
   src/tray/main.cpp
   src/tray/tray.cpp
@@ -33,11 +34,14 @@ target_link_libraries(GPUOverlay PRIVATE
 
 # Hook DLL (injected into game process)
 add_library(GPUOverlayHook SHARED
+  src/common/diagnostics.cpp
   src/common/overlay_config.cpp
   src/hook/dllmain.cpp
   src/hook/dx11_hook.cpp
   src/hook/overlay_renderer.cpp
+  src/hook/overlay_presentation.cpp
   src/hook/telemetry_provider.cpp
+  src/hook/telemetry_policy.cpp
   src/hook/amd_metrics.cpp
   src/hook/nvidia_metrics.cpp
   src/hook/intel_metrics.cpp
@@ -123,6 +127,23 @@ if(BUILD_TESTING)
     target_compile_options(GPUOverlayConfigTests PRIVATE /W4 /permissive-)
   endif()
   add_test(NAME config COMMAND GPUOverlayConfigTests)
+
+  add_executable(GPUOverlayBehaviorTests
+    tests/overlay_tests.cpp
+    src/hook/overlay_presentation.cpp
+    src/hook/telemetry_policy.cpp
+  )
+  target_include_directories(GPUOverlayBehaviorTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(GPUOverlayBehaviorTests PRIVATE
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+  )
+  if(MSVC)
+    target_compile_options(GPUOverlayBehaviorTests PRIVATE /W4 /permissive-)
+  endif()
+  add_test(NAME overlay_behavior COMMAND GPUOverlayBehaviorTests)
 endif()
 
 # Copy hook DLL next to exe for easy injection

@@ -1,15 +1,11 @@
 #include "hook/overlay_renderer.h"
-#include "hook/telemetry_provider.h"
-#include <algorithm>
+#include "hook/overlay_presentation.h"
 #include <d3d11.h>
 #include <dxgi.h>
 #include <d3dcompiler.h>
 #include <windows.h>
 #include <cstring>
-#include <cmath>
 #include <string>
-#include <sstream>
-#include <iomanip>
 #include <utility>
 
 #pragma comment(lib, "d3dcompiler.lib")
@@ -17,11 +13,6 @@
 namespace gpuoverlay {
 
 namespace {
-
-constexpr int OVERLAY_WIDTH = 320;
-constexpr int OVERLAY_HEIGHT = 140;
-constexpr int PADDING = 8;
-constexpr int LINE_HEIGHT = 22;
 
 static const char* vsSrc = R"(
 struct VS_IN { float2 pos : POSITION; float2 uv : TEXCOORD0; };
@@ -148,8 +139,8 @@ bool OverlayRenderer::createResources(ID3D11Device* device, IDXGISwapChain* swap
   if (!get_swap_chain_size(swapChain, lastWidth_, lastHeight_)) return false;
 
   D3D11_TEXTURE2D_DESC texDesc = {};
-  texDesc.Width = OVERLAY_WIDTH;
-  texDesc.Height = OVERLAY_HEIGHT;
+  texDesc.Width = kOverlayWidth;
+  texDesc.Height = kOverlayHeight;
   texDesc.MipLevels = 1;
   texDesc.ArraySize = 1;
   texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -318,48 +309,10 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
     lastHeight_ = height;
   }
 
-  std::wostringstream ss;
-  int lineCount = 0;
-  const auto addLine = [&](const std::wstring& line) {
-    if (lineCount > 0) ss << L'\n';
-    ss << line;
-    ++lineCount;
-  };
+  OverlayText overlayText = format_overlay_text(metrics, fps, config);
+  if (overlayText.lineCount == 0) return;
 
-  if (config.showGpuUsage) {
-    std::wostringstream line;
-    line << metrics.providerName << L": ";
-    if (metrics.gpuUsageValid) line << metrics.gpuUsagePercent << L'%';
-    else line << L"N/A";
-    addLine(line.str());
-  }
-  if (config.showVram) {
-    std::wostringstream line;
-    line << L"VRAM: ";
-    if (metrics.vramUsageValid)
-      line << std::fixed << std::setprecision(2) << metrics.vramUsageGB << L" GB";
-    else
-      line << L"N/A";
-    addLine(line.str());
-  }
-  if (config.showFps) addLine(L"FPS: " + std::to_wstring(fps));
-  if (config.showClock) {
-    std::wostringstream line;
-    line << L"Clock: ";
-    if (metrics.engineClockValid) line << metrics.engineClockMHz << L" MHz";
-    else line << L"N/A";
-    addLine(line.str());
-  }
-  if (config.showTemperature) {
-    std::wostringstream line;
-    line << L"Temp: ";
-    if (metrics.temperatureValid) line << metrics.temperatureC << L" C";
-    else line << L"N/A";
-    addLine(line.str());
-  }
-  if (lineCount == 0) return;
-
-  std::wstring text = ss.str();
+  std::wstring text = std::move(overlayText.value);
   const bool colorsChanged = !hasLastColors_ ||
                              config.textColor != lastTextColor_ ||
                              config.backgroundColor != lastBackgroundColor_;
@@ -375,7 +328,7 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
       return;
     }
 
-    RECT rect = { 0, 0, OVERLAY_WIDTH, OVERLAY_HEIGHT };
+    RECT rect = {0, 0, kOverlayWidth, kOverlayHeight};
     HBRUSH bg = CreateSolidBrush(config.backgroundColor.colorref());
     FillRect(hdc, &rect, bg);
     DeleteObject(bg);
@@ -384,13 +337,14 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
     SetTextColor(hdc, config.textColor.colorref());
     HGDIOBJ oldFont = SelectObject(hdc, font_);
 
-    int y = PADDING;
+    int y = kOverlayPadding;
     for (size_t i = 0, start = 0; i <= text.size(); ++i) {
       if (i == text.size() || text[i] == L'\n') {
         std::wstring line(text.begin() + start, text.begin() + i);
         if (!line.empty())
-          TextOutW(hdc, PADDING, y, line.c_str(), static_cast<int>(line.size()));
-        y += LINE_HEIGHT;
+          TextOutW(hdc, kOverlayPadding, y, line.c_str(),
+                   static_cast<int>(line.size()));
+        y += kOverlayLineHeight;
         start = i + 1;
       }
     }
@@ -426,22 +380,10 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
   context->RSSetViewports(1, &vp);
   context->OMSetRenderTargets(1, &backBufferRtv, nullptr);
 
-  const int contentHeight = PADDING * 2 + lineCount * LINE_HEIGHT;
-  const float scale = (std::clamp)(config.scale, 0.5f, 3.0f);
-  const int drawWidth = static_cast<int>(std::lround(OVERLAY_WIDTH * scale));
-  const int drawHeight = static_cast<int>(std::lround(contentHeight * scale));
-  const int margin = static_cast<int>(std::lround(PADDING * scale));
-  int x = margin;
-  int y = margin;
-  if (config.position == OverlayPosition::TopRight ||
-      config.position == OverlayPosition::BottomRight)
-    x = (std::max)(0, width - drawWidth - margin);
-  if (config.position == OverlayPosition::BottomLeft ||
-      config.position == OverlayPosition::BottomRight)
-    y = (std::max)(0, height - drawHeight - margin);
-
-  drawTextQuad(context, x, y, drawWidth, drawHeight,
-               static_cast<float>(contentHeight) / OVERLAY_HEIGHT);
+  const OverlayBounds bounds = calculate_overlay_bounds(
+      width, height, overlayText.lineCount, config);
+  drawTextQuad(context, bounds.x, bounds.y, bounds.width, bounds.height,
+               bounds.sourceHeight);
 
   backBufferRtv->Release();
 }

@@ -1,16 +1,17 @@
 #include "hook/telemetry_provider.h"
+#include "common/diagnostics.h"
 #include "hook/amd_metrics.h"
 #include "hook/intel_metrics.h"
 #include "hook/nvidia_metrics.h"
+#include "hook/telemetry_policy.h"
 #include <dxgi1_4.h>
+#include <iomanip>
+#include <sstream>
+#include <utility>
 
 namespace gpuoverlay {
 
 namespace {
-
-constexpr UINT kAmdVendorId = 0x1002;
-constexpr UINT kNvidiaVendorId = 0x10DE;
-constexpr UINT kIntelVendorId = 0x8086;
 
 class DxgiMetrics final : public TelemetryProvider {
 public:
@@ -87,17 +88,26 @@ void update_dxgi_memory(ID3D11Device* device, GPUMetrics& out) {
 
 std::unique_ptr<TelemetryProvider> create_telemetry_provider(ID3D11Device* device) {
   DXGI_ADAPTER_DESC desc = {};
-  get_adapter_desc(device, desc);
+  if (!get_adapter_desc(device, desc)) {
+    log_message(LogLevel::Warning,
+                L"Could not read the DirectX adapter description; using DXGI");
+  } else {
+    std::wostringstream message;
+    message << L"DirectX adapter: " << desc.Description << L" (vendor 0x"
+            << std::hex << std::uppercase << desc.VendorId << L")";
+    log_message(LogLevel::Info, message.str());
+  }
 
   std::unique_ptr<TelemetryProvider> provider;
-  switch (desc.VendorId) {
-    case kAmdVendorId:
+  const TelemetryProviderKind kind = provider_kind_from_vendor_id(desc.VendorId);
+  switch (kind) {
+    case TelemetryProviderKind::AmdAdl:
       provider = std::make_unique<AMDMetrics>();
       break;
-    case kNvidiaVendorId:
+    case TelemetryProviderKind::NvidiaNvapi:
       provider = std::make_unique<NvidiaMetrics>();
       break;
-    case kIntelVendorId:
+    case TelemetryProviderKind::IntelIgcl:
       provider = std::make_unique<IntelMetrics>();
       break;
     default:
@@ -105,11 +115,24 @@ std::unique_ptr<TelemetryProvider> create_telemetry_provider(ID3D11Device* devic
       break;
   }
 
-  if (provider->init(device)) return provider;
-  provider->shutdown();
-  provider = std::make_unique<DxgiMetrics>();
-  provider->init(device);
-  return provider;
+  const bool isFallback = kind == TelemetryProviderKind::Dxgi;
+  const wchar_t* selectedName = provider_kind_name(kind);
+  std::unique_ptr<TelemetryProvider> fallback;
+  if (!isFallback) fallback = std::make_unique<DxgiMetrics>();
+  std::unique_ptr<TelemetryProvider> selected = initialize_provider_or_fallback(
+      std::move(provider), std::move(fallback), device);
+  if (!selected) {
+    log_message(LogLevel::Error, L"No telemetry provider could be initialized");
+    return nullptr;
+  }
+  if (!isFallback && std::wstring(selected->name()) == L"DXGI") {
+    log_message(LogLevel::Warning,
+                std::wstring(selectedName) + L" unavailable; using DXGI fallback");
+  } else {
+    log_message(LogLevel::Info,
+                std::wstring(L"Telemetry provider: ") + selected->name());
+  }
+  return selected;
 }
 
 }  // namespace gpuoverlay
