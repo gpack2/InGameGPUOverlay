@@ -1,7 +1,9 @@
 #include "tray/tray.h"
 #include "tray/settings_dialog.h"
 #include "common/overlay_config.h"
+#include "common/diagnostics.h"
 #include <windows.h>
+#include <shellapi.h>
 #include <string>
 #include <vector>
 
@@ -43,8 +45,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
       }
       if (LOWORD(wParam) == gpuoverlay::kTraySettingsCommand) {
-        gpuoverlay::show_settings_dialog(hwnd,
-                                         gpuoverlay::default_config_path());
+        gpuoverlay::log_message(gpuoverlay::LogLevel::Info,
+                                L"Opening settings");
+        if (gpuoverlay::show_settings_dialog(
+                hwnd, gpuoverlay::default_config_path()))
+          gpuoverlay::log_message(gpuoverlay::LogLevel::Info,
+                                  L"Settings saved");
+        return 0;
+      }
+      if (LOWORD(wParam) == gpuoverlay::kTrayLogsCommand) {
+        const std::wstring directory = gpuoverlay::diagnostics_directory();
+        const HINSTANCE result = ShellExecuteW(hwnd, L"open", directory.c_str(),
+                                               nullptr, nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(result) <= 32) {
+          gpuoverlay::log_message(gpuoverlay::LogLevel::Error,
+                                  L"Could not open the log folder");
+          MessageBoxW(hwnd, L"The log folder could not be opened.",
+                      L"GPU Overlay", MB_OK | MB_ICONERROR);
+        }
         return 0;
       }
       break;
@@ -59,21 +77,37 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
-  gpuoverlay::ensure_overlay_config(gpuoverlay::default_config_path());
+  gpuoverlay::initialize_diagnostics(L"tray");
+  gpuoverlay::log_message(gpuoverlay::LogLevel::Info,
+                          L"GPU Overlay tray app starting");
+  const std::wstring configPath = gpuoverlay::default_config_path();
+  gpuoverlay::ensure_overlay_config(configPath);
+  gpuoverlay::log_message(gpuoverlay::LogLevel::Info,
+                          L"Configuration: " + configPath);
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = WndProc;
   wc.hInstance = hInstance;
   wc.lpszClassName = kWindowClass;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  if (!RegisterClassExW(&wc)) return 1;
+  if (!RegisterClassExW(&wc)) {
+    gpuoverlay::log_last_error(gpuoverlay::LogLevel::Error,
+                               L"Tray window registration failed");
+    return 1;
+  }
 
   HWND hwnd = CreateWindowExW(0, kWindowClass, L"GPU Overlay",
                               WS_OVERLAPPED, 0, 0, 0, 0,
                               nullptr, nullptr, hInstance, nullptr);
-  if (!hwnd) return 1;
+  if (!hwnd) {
+    gpuoverlay::log_last_error(gpuoverlay::LogLevel::Error,
+                               L"Tray window creation failed");
+    return 1;
+  }
 
   if (!gpuoverlay::tray_init(hwnd, L"GPU Overlay - Right-click to inject")) {
+    gpuoverlay::log_last_error(gpuoverlay::LogLevel::Error,
+                               L"System tray icon creation failed");
     DestroyWindow(hwnd);
     return 1;
   }
@@ -85,5 +119,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     TranslateMessage(&msg);
     DispatchMessage(&msg);
   }
+  gpuoverlay::log_message(gpuoverlay::LogLevel::Info,
+                          L"GPU Overlay tray app stopped");
   return 0;
 }
