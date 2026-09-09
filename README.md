@@ -1,6 +1,6 @@
 # GPU Overlay
 
-A **Windows system-tray application** that injects an in-game overlay into DirectX 11 games (including Steam games) and displays real-time **AMD Radeon** GPU metrics.
+A **Windows system-tray application** that injects an in-game overlay into DirectX 11 games (including Steam games). FPS and VRAM usage work on any DXGI-compatible GPU; AMD Radeon systems also show usage, clock, and temperature through ADL.
 
 ## Displayed metrics
 
@@ -12,8 +12,9 @@ A **Windows system-tray application** that injects an in-game overlay into Direc
 
 ## Requirements
 
-- **Windows 10/11** (64-bit recommended for Steam games)
-- **AMD Radeon** consumer GPU with up-to-date drivers (Radeon Software Adrenalin)
+- **Windows 10/11** (the overlay build must match the game's 32/64-bit architecture)
+- A **DirectX 11-compatible GPU**
+- **AMD Radeon Software Adrenalin** for AMD-specific usage, clock, and temperature metrics
 - **DirectX 11** game (e.g. many Steam titles using DX11)
 
 ## Build (Windows)
@@ -28,6 +29,8 @@ cd build
 cmake .. -G "Visual Studio 17 2022" -A x64
 cmake --build . --config Release
 ```
+
+Use `-A Win32` instead when targeting a 32-bit game.
 
 4. Run from `build\Release\`:
    - **GPUOverlay.exe** – tray app
@@ -53,6 +56,7 @@ No AMD SDK install is required; ADL is used via the driver’s **atiadlxx.dll**.
 
 ## Compatibility
 
-- **AMD Radeon** only (consumer GPUs). ADL is used for usage %, clock, and temperature; VRAM comes from DXGI.
+- FPS and VRAM usage work on any DXGI-compatible GPU.
+- AMD Radeon consumer GPUs additionally report usage %, clock, and temperature through ADL. Those fields display `N/A` on other GPUs.
 - **DX11** games only. DX12/Vulkan are not supported.
 - **Steam** games that use DX11 are supported; inject into the game process after the game is running.

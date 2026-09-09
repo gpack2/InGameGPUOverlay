@@ -4,9 +4,11 @@
 #include <dxgi.h>
 #include <d3dcompiler.h>
 #include <windows.h>
+#include <cstring>
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <utility>
 
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -36,9 +38,101 @@ SamplerState samp : register(s0);
 struct PS_IN { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
 float4 main(PS_IN i) : SV_Target {
   float4 c = tex.Sample(samp, i.uv);
-  return c;
+  return float4(c.rgb, 0.78);
 }
 )";
+
+template <typename T>
+void release_if_set(T*& value) {
+  if (value) {
+    value->Release();
+    value = nullptr;
+  }
+}
+
+bool get_swap_chain_size(IDXGISwapChain* swapChain, int& width, int& height) {
+  ID3D11Texture2D* backBuffer = nullptr;
+  if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D),
+                                  reinterpret_cast<void**>(&backBuffer))))
+    return false;
+
+  D3D11_TEXTURE2D_DESC desc = {};
+  backBuffer->GetDesc(&desc);
+  backBuffer->Release();
+  width = static_cast<int>(desc.Width);
+  height = static_cast<int>(desc.Height);
+  return width > 0 && height > 0;
+}
+
+// Present hooks share the immediate context with the game. Restore every state
+// slot touched by the overlay so rendering after Present is not corrupted.
+class D3D11StateBackup {
+public:
+  explicit D3D11StateBackup(ID3D11DeviceContext* context) : context_(context) {
+    context_->IAGetInputLayout(&inputLayout_);
+    context_->IAGetVertexBuffers(0, 1, &vertexBuffer_, &vertexStride_, &vertexOffset_);
+    context_->IAGetPrimitiveTopology(&topology_);
+    context_->VSGetShader(&vertexShader_, nullptr, nullptr);
+    context_->PSGetShader(&pixelShader_, nullptr, nullptr);
+    context_->PSGetShaderResources(0, 1, &shaderResource_);
+    context_->PSGetSamplers(0, 1, &sampler_);
+    context_->OMGetBlendState(&blendState_, blendFactor_, &sampleMask_);
+    context_->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT,
+                                 renderTargets_, &depthStencilView_);
+    context_->RSGetState(&rasterizerState_);
+    viewportCount_ = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    context_->RSGetViewports(&viewportCount_, viewports_);
+  }
+
+  ~D3D11StateBackup() {
+    context_->IASetInputLayout(inputLayout_);
+    context_->IASetVertexBuffers(0, 1, &vertexBuffer_, &vertexStride_, &vertexOffset_);
+    context_->IASetPrimitiveTopology(topology_);
+    context_->VSSetShader(vertexShader_, nullptr, 0);
+    context_->PSSetShader(pixelShader_, nullptr, 0);
+    context_->PSSetShaderResources(0, 1, &shaderResource_);
+    context_->PSSetSamplers(0, 1, &sampler_);
+    context_->OMSetBlendState(blendState_, blendFactor_, sampleMask_);
+    context_->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT,
+                                 renderTargets_, depthStencilView_);
+    context_->RSSetState(rasterizerState_);
+    context_->RSSetViewports(viewportCount_, viewports_);
+
+    release_if_set(inputLayout_);
+    release_if_set(vertexBuffer_);
+    release_if_set(vertexShader_);
+    release_if_set(pixelShader_);
+    release_if_set(shaderResource_);
+    release_if_set(sampler_);
+    release_if_set(blendState_);
+    for (auto& target : renderTargets_) release_if_set(target);
+    release_if_set(depthStencilView_);
+    release_if_set(rasterizerState_);
+  }
+
+  D3D11StateBackup(const D3D11StateBackup&) = delete;
+  D3D11StateBackup& operator=(const D3D11StateBackup&) = delete;
+
+private:
+  ID3D11DeviceContext* context_ = nullptr;
+  ID3D11InputLayout* inputLayout_ = nullptr;
+  ID3D11Buffer* vertexBuffer_ = nullptr;
+  UINT vertexStride_ = 0;
+  UINT vertexOffset_ = 0;
+  D3D11_PRIMITIVE_TOPOLOGY topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+  ID3D11VertexShader* vertexShader_ = nullptr;
+  ID3D11PixelShader* pixelShader_ = nullptr;
+  ID3D11ShaderResourceView* shaderResource_ = nullptr;
+  ID3D11SamplerState* sampler_ = nullptr;
+  ID3D11BlendState* blendState_ = nullptr;
+  FLOAT blendFactor_[4] = {};
+  UINT sampleMask_ = 0;
+  ID3D11RenderTargetView* renderTargets_[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+  ID3D11DepthStencilView* depthStencilView_ = nullptr;
+  ID3D11RasterizerState* rasterizerState_ = nullptr;
+  UINT viewportCount_ = 0;
+  D3D11_VIEWPORT viewports_[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+};
 
 }  // namespace
 
@@ -49,10 +143,7 @@ OverlayRenderer::~OverlayRenderer() {
 }
 
 bool OverlayRenderer::createResources(ID3D11Device* device, IDXGISwapChain* swapChain) {
-  DXGI_SWAP_CHAIN_DESC scDesc = {};
-  swapChain->GetDesc(&scDesc);
-  lastWidth_ = static_cast<int>(scDesc.BufferDesc.Width);
-  lastHeight_ = static_cast<int>(scDesc.BufferDesc.Height);
+  if (!get_swap_chain_size(swapChain, lastWidth_, lastHeight_)) return false;
 
   D3D11_TEXTURE2D_DESC texDesc = {};
   texDesc.Width = OVERLAY_WIDTH;
@@ -65,6 +156,7 @@ bool OverlayRenderer::createResources(ID3D11Device* device, IDXGISwapChain* swap
   texDesc.Usage = D3D11_USAGE_DEFAULT;
   texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
   texDesc.CPUAccessFlags = 0;
+  texDesc.MiscFlags = D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
 
   HRESULT hr = device->CreateTexture2D(&texDesc, nullptr, &textTexture_);
   if (FAILED(hr) || !textTexture_) return false;
@@ -79,6 +171,7 @@ bool OverlayRenderer::createResources(ID3D11Device* device, IDXGISwapChain* swap
   ID3DBlob* vsBlob = nullptr;
   ID3DBlob* errBlob = nullptr;
   hr = D3DCompile(vsSrc, strlen(vsSrc), nullptr, nullptr, nullptr, "main", "vs_4_0", 0, 0, &vsBlob, &errBlob);
+  release_if_set(errBlob);
   if (FAILED(hr)) return false;
   hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs_);
   if (FAILED(hr)) { vsBlob->Release(); return false; }
@@ -93,6 +186,7 @@ bool OverlayRenderer::createResources(ID3D11Device* device, IDXGISwapChain* swap
 
   ID3DBlob* psBlob = nullptr;
   hr = D3DCompile(psSrc, strlen(psSrc), nullptr, nullptr, nullptr, "main", "ps_4_0", 0, 0, &psBlob, &errBlob);
+  release_if_set(errBlob);
   if (FAILED(hr)) return false;
   hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &ps_);
   psBlob->Release();
@@ -139,19 +233,29 @@ bool OverlayRenderer::createResources(ID3D11Device* device, IDXGISwapChain* swap
   hr = device->CreateBuffer(&vbDesc, &vbData, &vertexBuffer_);
   if (FAILED(hr)) return false;
 
+  font_ = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                      DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+  if (!font_) return false;
+
   return true;
 }
 
 bool OverlayRenderer::init(ID3D11Device* device, ID3D11DeviceContext* context, IDXGISwapChain* swapChain) {
   if (!device || !context || !swapChain) return false;
+  shutdown();
   device_ = device;
   context_ = context;
   device_->AddRef();
   context_->AddRef();
-  return createResources(device, swapChain);
+  if (createResources(device, swapChain)) return true;
+  shutdown();
+  return false;
 }
 
 void OverlayRenderer::shutdown() {
+  lastText_.clear();
+  if (font_) { DeleteObject(font_); font_ = nullptr; }
   if (vertexBuffer_) { vertexBuffer_->Release(); vertexBuffer_ = nullptr; }
   if (rasterizer_) { rasterizer_->Release(); rasterizer_ = nullptr; }
   if (blendState_) { blendState_->Release(); blendState_ = nullptr; }
@@ -200,61 +304,69 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
                              const GPUMetrics& metrics, int fps) {
   if (!swapChain || !context || !device_ || !textTexture_) return;
 
-  DXGI_SWAP_CHAIN_DESC scDesc = {};
-  swapChain->GetDesc(&scDesc);
-  int width = static_cast<int>(scDesc.BufferDesc.Width);
-  int height = static_cast<int>(scDesc.BufferDesc.Height);
+  int width = 0;
+  int height = 0;
+  if (!get_swap_chain_size(swapChain, width, height)) return;
   if (width != lastWidth_ || height != lastHeight_) {
     if (rtv_) { rtv_->Release(); rtv_ = nullptr; }
     lastWidth_ = width;
     lastHeight_ = height;
   }
 
-  IDXGISurface* surface = nullptr;
-  if (FAILED(textTexture_->QueryInterface(__uuidof(IDXGISurface), reinterpret_cast<void**>(&surface))))
-    return;
-
-  HDC hdc = nullptr;
-  if (FAILED(surface->GetDC(FALSE, &hdc))) {
-    surface->Release();
-    return;
-  }
-
-  RECT rect = { 0, 0, OVERLAY_WIDTH, OVERLAY_HEIGHT };
-  HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
-  FillRect(hdc, &rect, bg);
-  DeleteObject(bg);
-
-  SetBkMode(hdc, TRANSPARENT);
-  SetTextColor(hdc, RGB(0, 255, 0));
-  HFONT font = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                           DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-  HGDIOBJ oldFont = SelectObject(hdc, font);
-
   std::wostringstream ss;
-  ss << L"GPU: " << metrics.gpuUsagePercent << L"%\n";
+  if (metrics.gpuUsageValid)
+    ss << L"GPU: " << metrics.gpuUsagePercent << L"%\n";
+  else
+    ss << L"GPU: N/A\n";
   ss << L"VRAM: " << std::fixed << std::setprecision(2) << metrics.vramUsageGB << L" GB\n";
   ss << L"FPS: " << fps << L"\n";
-  ss << L"Clock: " << metrics.engineClockMHz << L" MHz\n";
-  ss << L"Temp: " << metrics.temperatureC << L" C";
+  if (metrics.engineClockValid)
+    ss << L"Clock: " << metrics.engineClockMHz << L" MHz\n";
+  else
+    ss << L"Clock: N/A\n";
+  if (metrics.temperatureValid)
+    ss << L"Temp: " << metrics.temperatureC << L" C";
+  else
+    ss << L"Temp: N/A";
 
   std::wstring text = ss.str();
-  int y = PADDING;
-  for (size_t i = 0, start = 0; i <= text.size(); ++i) {
-    if (i == text.size() || text[i] == L'\n') {
-      std::wstring line(text.begin() + start, text.begin() + i);
-      if (!line.empty())
-        TextOutW(hdc, PADDING, y, line.c_str(), static_cast<int>(line.size()));
-      y += LINE_HEIGHT;
-      start = i + 1;
-    }
-  }
+  if (text != lastText_) {
+    IDXGISurface1* surface = nullptr;
+    if (FAILED(textTexture_->QueryInterface(__uuidof(IDXGISurface1),
+                                            reinterpret_cast<void**>(&surface))))
+      return;
 
-  SelectObject(hdc, oldFont);
-  DeleteObject(font);
-  surface->ReleaseDC(hdc);
-  surface->Release();
+    HDC hdc = nullptr;
+    if (FAILED(surface->GetDC(FALSE, &hdc))) {
+      surface->Release();
+      return;
+    }
+
+    RECT rect = { 0, 0, OVERLAY_WIDTH, OVERLAY_HEIGHT };
+    HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(hdc, &rect, bg);
+    DeleteObject(bg);
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(0, 255, 0));
+    HGDIOBJ oldFont = SelectObject(hdc, font_);
+
+    int y = PADDING;
+    for (size_t i = 0, start = 0; i <= text.size(); ++i) {
+      if (i == text.size() || text[i] == L'\n') {
+        std::wstring line(text.begin() + start, text.begin() + i);
+        if (!line.empty())
+          TextOutW(hdc, PADDING, y, line.c_str(), static_cast<int>(line.size()));
+        y += LINE_HEIGHT;
+        start = i + 1;
+      }
+    }
+
+    SelectObject(hdc, oldFont);
+    surface->ReleaseDC(nullptr);
+    surface->Release();
+    lastText_ = std::move(text);
+  }
 
   ID3D11RenderTargetView* backBufferRtv = nullptr;
   ID3D11Texture2D* backBuffer = nullptr;
@@ -265,6 +377,8 @@ void OverlayRenderer::render(IDXGISwapChain* swapChain, ID3D11DeviceContext* con
     return;
   }
   backBuffer->Release();
+
+  D3D11StateBackup stateBackup(context);
 
   D3D11_VIEWPORT vp = {};
   vp.TopLeftX = 0;

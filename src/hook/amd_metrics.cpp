@@ -19,13 +19,12 @@ struct AMDMetrics::Impl {
   ADL2_MAIN_CONTROL_DESTROY Main_Control_Destroy = nullptr;
   ADL2_OVERDRIVE5_CURRENTACTIVITY_GET Overdrive5_CurrentActivity_Get = nullptr;
   ADL2_OVERDRIVE5_TEMPERATURE_GET Overdrive5_Temperature_Get = nullptr;
-  ADL_MAIN_MEMORY_ALLOC Main_Memory_Alloc = nullptr;
 
   int adapterIndex = 0;
   bool adlOk = false;
 };
 
-static void* ADL_Main_Memory_Alloc_Impl(int iSize) {
+static void* __stdcall ADL_Main_Memory_Alloc_Impl(int iSize) {
   return malloc(static_cast<size_t>(iSize));
 }
 
@@ -56,9 +55,6 @@ bool AMDMetrics::init() {
       GetProcAddress(impl_->adlDll, "ADL2_Overdrive5_CurrentActivity_Get"));
   impl_->Overdrive5_Temperature_Get = reinterpret_cast<ADL2_OVERDRIVE5_TEMPERATURE_GET>(
       GetProcAddress(impl_->adlDll, "ADL2_Overdrive5_Temperature_Get"));
-  impl_->Main_Memory_Alloc = reinterpret_cast<ADL_MAIN_MEMORY_ALLOC>(
-      GetProcAddress(impl_->adlDll, "ADL_Main_Memory_Alloc"));
-
   if (!impl_->Main_Control_Create || !impl_->Main_Control_Destroy ||
       !impl_->Overdrive5_CurrentActivity_Get || !impl_->Overdrive5_Temperature_Get) {
     FreeLibrary(impl_->adlDll);
@@ -116,28 +112,31 @@ static double getVramUsageGB(ID3D11Device* device) {
 }
 
 void AMDMetrics::update(void* d3d11Device, GPUMetrics& out) {
-  out.valid = false;
   out.gpuUsagePercent = 0;
   out.vramUsageGB = 0.0;
   out.engineClockMHz = 0;
   out.temperatureC = 0;
+  out.gpuUsageValid = false;
+  out.engineClockValid = false;
+  out.temperatureValid = false;
 
   if (impl_->adlOk && impl_->context) {
     ADLPMActivity activity = {};
     activity.iSize = sizeof(ADLPMActivity);
     if (impl_->Overdrive5_CurrentActivity_Get(impl_->context, impl_->adapterIndex, &activity) == ADL_OK) {
       out.gpuUsagePercent = activity.iActivityPercent;
-      // ADL engine/memory clock: typically in 10 KHz (10000 = 1 MHz)
+      // ADL reports clocks in 10 KHz units (100 units = 1 MHz).
       out.engineClockMHz = activity.iEngineClock / 100;
+      out.gpuUsageValid = true;
+      out.engineClockValid = true;
     }
 
     ADLTemperature temp = {};
     temp.iSize = sizeof(ADLTemperature);
     if (impl_->Overdrive5_Temperature_Get(impl_->context, impl_->adapterIndex, 0, &temp) == ADL_OK) {
       out.temperatureC = temp.iTemperature / 1000;  // millidegrees -> Celsius
+      out.temperatureValid = true;
     }
-
-    out.valid = true;
   }
 
   if (d3d11Device) {

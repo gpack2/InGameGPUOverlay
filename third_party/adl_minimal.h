@@ -7,27 +7,32 @@
 #ifdef _WIN32
 
 #include <cstdint>
+#include <cstddef>
 
 #define ADL_OK 0
 #define ADL_MAX_PATH 256
 
 typedef void* ADL_CONTEXT_HANDLE;
-typedef void* ADL_MAIN_MALLOC_CALLBACK;
+typedef void* (__stdcall *ADL_MAIN_MALLOC_CALLBACK)(int iSize);
 
 extern "C" {
 
 struct ADLPMActivity {
   int iSize;
-  int iActivityPercent;
   int iEngineClock;
   int iMemoryClock;
   int iVddc;
-  int iCurrentBusLanes;
-  int iCurrentBusSpeed;
+  int iActivityPercent;
   int iCurrentPerformanceLevel;
+  int iCurrentBusSpeed;
+  int iCurrentBusLanes;
   int iMaximumBusLanes;
   int iReserved;
 };
+
+static_assert(sizeof(ADLPMActivity) == 40, "ADLPMActivity ABI size mismatch");
+static_assert(offsetof(ADLPMActivity, iActivityPercent) == 16,
+              "ADLPMActivity ABI layout mismatch");
 
 struct ADLTemperature {
   int iSize;
@@ -45,9 +50,6 @@ typedef int (*ADL2_OVERDRIVE5_CURRENTACTIVITY_GET)(ADL_CONTEXT_HANDLE context, i
 
 // ADL2_Overdrive5_Temperature_Get (iThermalControllerIndex 0 = GPU)
 typedef int (*ADL2_OVERDRIVE5_TEMPERATURE_GET)(ADL_CONTEXT_HANDLE context, int iAdapterIndex, int iThermalControllerIndex, ADLTemperature* lpTemperature);
-
-// ADL_Main_Memory_Alloc
-typedef void* (*ADL_MAIN_MEMORY_ALLOC)(int iSize);
 
 }  // extern "C"
 
