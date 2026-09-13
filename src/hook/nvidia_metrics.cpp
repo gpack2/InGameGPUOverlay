@@ -1,4 +1,5 @@
 #include "hook/nvidia_metrics.h"
+#include "common/diagnostics.h"
 #include <nvapi.h>
 #include <algorithm>
 #include <cmath>
@@ -50,12 +51,18 @@ NvidiaMetrics::~NvidiaMetrics() {
 bool NvidiaMetrics::init(ID3D11Device* device) {
   if (!impl_) return false;
   shutdown();
-  if (NvAPI_Initialize() != NVAPI_OK) return false;
+  const NvAPI_Status initResult = NvAPI_Initialize();
+  if (initResult != NVAPI_OK) {
+    log_message(LogLevel::Warning, L"NVIDIA NVAPI initialization failed (status " +
+                                       std::to_wstring(initResult) + L")");
+    return false;
+  }
   impl_->initialized = true;
 
   NvPhysicalGpuHandle handles[NVAPI_MAX_PHYSICAL_GPUS] = {};
   NvU32 count = 0;
   if (NvAPI_EnumPhysicalGPUs(handles, &count) != NVAPI_OK || count == 0) {
+    log_message(LogLevel::Warning, L"NVIDIA NVAPI found no physical GPUs");
     shutdown();
     return false;
   }
@@ -77,6 +84,9 @@ bool NvidiaMetrics::init(ID3D11Device* device) {
   }
 
   if (!impl_->gpu) impl_->gpu = handles[0];
+  log_message(LogLevel::Info,
+              L"NVIDIA NVAPI initialized with " + std::to_wstring(count) +
+                  L" physical GPU(s)");
   return true;
 }
 

@@ -1,9 +1,11 @@
 #include "hook/dx11_hook.h"
+#include "common/diagnostics.h"
 #include "MinHook.h"
 #include <d3d11.h>
 #include <dxgi.h>
 #include <windows.h>
 #include <condition_variable>
+#include <atomic>
 #include <mutex>
 #include <utility>
 
@@ -22,6 +24,7 @@ PresentCallback g_presentCallback;
 std::mutex g_callbackMutex;
 std::condition_variable g_callbackIdle;
 unsigned int g_activePresentCalls = 0;
+std::atomic<bool> g_callbackExceptionLogged{false};
 
 HRESULT WINAPI hooked_present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
   PresentCallback callback;
@@ -42,6 +45,9 @@ HRESULT WINAPI hooked_present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
           callback(pSwapChain, device, context);
         } catch (...) {
           // Never allow overlay code to unwind through the game's Present call.
+          if (!g_callbackExceptionLogged.exchange(true))
+            log_message(LogLevel::Error,
+                        L"An overlay callback exception was suppressed");
         }
         context->Release();
       }
@@ -112,24 +118,39 @@ static void* get_present_address() {
 }
 
 bool install_dx11_hook() {
-  if (MH_Initialize() != MH_OK) return false;
+  const MH_STATUS initStatus = MH_Initialize();
+  if (initStatus != MH_OK) {
+    log_message(LogLevel::Error, L"MinHook initialization failed (status " +
+                                     std::to_wstring(initStatus) + L")");
+    return false;
+  }
 
   void* presentAddr = get_present_address();
   if (!presentAddr) {
+    log_message(LogLevel::Error,
+                L"Could not locate IDXGISwapChain::Present");
     MH_Uninitialize();
     return false;
   }
 
-  if (MH_CreateHook(presentAddr, &hooked_present, reinterpret_cast<LPVOID*>(&g_originalPresent)) != MH_OK) {
+  const MH_STATUS createStatus = MH_CreateHook(
+      presentAddr, &hooked_present, reinterpret_cast<LPVOID*>(&g_originalPresent));
+  if (createStatus != MH_OK) {
+    log_message(LogLevel::Error, L"Present hook creation failed (status " +
+                                     std::to_wstring(createStatus) + L")");
     MH_Uninitialize();
     return false;
   }
-  if (MH_EnableHook(presentAddr) != MH_OK) {
+  const MH_STATUS enableStatus = MH_EnableHook(presentAddr);
+  if (enableStatus != MH_OK) {
+    log_message(LogLevel::Error, L"Present hook activation failed (status " +
+                                     std::to_wstring(enableStatus) + L")");
     MH_RemoveHook(presentAddr);
     MH_Uninitialize();
     return false;
   }
   g_presentAddress = presentAddr;
+  log_message(LogLevel::Info, L"DirectX 11 Present hook installed");
   return true;
 }
 
@@ -145,6 +166,7 @@ void remove_dx11_hook() {
   MH_Uninitialize();
   g_presentAddress = nullptr;
   g_originalPresent = nullptr;
+  log_message(LogLevel::Info, L"DirectX 11 Present hook removed");
 }
 
 void set_present_callback(PresentCallback cb) {

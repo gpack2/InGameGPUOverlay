@@ -1,4 +1,5 @@
 #include "hook/intel_metrics.h"
+#include "common/diagnostics.h"
 #include <algorithm>
 #include <cmath>
 #include <dxgi.h>
@@ -89,7 +90,10 @@ bool IntelMetrics::init(ID3D11Device* d3dDevice) {
   shutdown();
   impl_->module = LoadLibraryExW(L"ControlLib.dll", nullptr,
                                  LOAD_LIBRARY_SEARCH_SYSTEM32);
-  if (!impl_->module) return false;
+  if (!impl_->module) {
+    log_last_error(LogLevel::Warning, L"Intel IGCL driver library was not found");
+    return false;
+  }
 
   const bool functionsLoaded =
       load_function(impl_->module, "ctlInit", impl_->pInit) &&
@@ -106,6 +110,7 @@ bool IntelMetrics::init(ID3D11Device* d3dDevice) {
       load_function(impl_->module, "ctlTemperatureGetProperties", impl_->pTemperatureGetProperties) &&
       load_function(impl_->module, "ctlTemperatureGetState", impl_->pTemperatureGetState);
   if (!functionsLoaded) {
+    log_message(LogLevel::Warning, L"Intel IGCL telemetry functions are unavailable");
     shutdown();
     return false;
   }
@@ -115,6 +120,7 @@ bool IntelMetrics::init(ID3D11Device* d3dDevice) {
   initArgs.AppVersion = CTL_IMPL_VERSION;
   initArgs.flags = CTL_INIT_FLAG_USE_LEVEL_ZERO;
   if (impl_->pInit(&initArgs, &impl_->api) != CTL_RESULT_SUCCESS || !impl_->api) {
+    log_message(LogLevel::Warning, L"Intel IGCL initialization failed");
     shutdown();
     return false;
   }
@@ -123,12 +129,14 @@ bool IntelMetrics::init(ID3D11Device* d3dDevice) {
   if (impl_->pEnumerateDevices(impl_->api, &deviceCount, nullptr) !=
           CTL_RESULT_SUCCESS ||
       deviceCount == 0) {
+    log_message(LogLevel::Warning, L"Intel IGCL found no devices");
     shutdown();
     return false;
   }
   std::vector<ctl_device_adapter_handle_t> devices(deviceCount);
   if (impl_->pEnumerateDevices(impl_->api, &deviceCount, devices.data()) !=
       CTL_RESULT_SUCCESS) {
+    log_message(LogLevel::Warning, L"Intel IGCL device enumeration failed");
     shutdown();
     return false;
   }
@@ -150,6 +158,8 @@ bool IntelMetrics::init(ID3D11Device* d3dDevice) {
     }
   }
   if (!impl_->device) {
+    log_message(LogLevel::Warning,
+                L"Intel IGCL could not match the DirectX adapter");
     shutdown();
     return false;
   }
@@ -220,9 +230,17 @@ bool IntelMetrics::init(ID3D11Device* d3dDevice) {
         impl_->pEngineGetActivity(impl_->engine, &impl_->previousEngineStats) ==
         CTL_RESULT_SUCCESS;
   }
+  log_message(LogLevel::Info,
+              L"Intel IGCL initialized (engine=" +
+                  std::wstring(impl_->engine ? L"yes" : L"no") + L", clock=" +
+                  std::wstring(impl_->frequency ? L"yes" : L"no") +
+                  L", temperature=" +
+                  std::wstring(impl_->temperature ? L"yes" : L"no") + L")");
   return true;
 #else
   (void)d3dDevice;
+  log_message(LogLevel::Warning,
+              L"Intel IGCL telemetry is unavailable in Win32 builds");
   return false;
 #endif
 }

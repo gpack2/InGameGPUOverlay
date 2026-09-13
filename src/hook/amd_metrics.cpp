@@ -1,4 +1,5 @@
 #include "hook/amd_metrics.h"
+#include "common/diagnostics.h"
 #include "../third_party/adl_minimal.h"
 #include <windows.h>
 #include <cstring>
@@ -37,12 +38,16 @@ AMDMetrics::~AMDMetrics() {
 
 bool AMDMetrics::init(ID3D11Device*) {
   if (!impl_) return false;
+  shutdown();
 #ifdef _WIN64
   impl_->adlDll = LoadLibraryW(L"atiadlxx.dll");
 #else
   impl_->adlDll = LoadLibraryW(L"atiadlxy.dll");
 #endif
-  if (!impl_->adlDll) return false;
+  if (!impl_->adlDll) {
+    log_last_error(LogLevel::Warning, L"AMD ADL driver library was not found");
+    return false;
+  }
 
   impl_->Main_Control_Create = reinterpret_cast<ADL2_MAIN_CONTROL_CREATE>(
       GetProcAddress(impl_->adlDll, "ADL2_Main_Control_Create"));
@@ -54,12 +59,14 @@ bool AMDMetrics::init(ID3D11Device*) {
       GetProcAddress(impl_->adlDll, "ADL2_Overdrive5_Temperature_Get"));
   if (!impl_->Main_Control_Create || !impl_->Main_Control_Destroy ||
       !impl_->Overdrive5_CurrentActivity_Get || !impl_->Overdrive5_Temperature_Get) {
+    log_message(LogLevel::Warning, L"AMD ADL telemetry functions are unavailable");
     FreeLibrary(impl_->adlDll);
     impl_->adlDll = nullptr;
     return false;
   }
 
   if (impl_->Main_Control_Create(ADL_Main_Memory_Alloc_Impl, 1, &impl_->context) != ADL_OK) {
+    log_message(LogLevel::Warning, L"AMD ADL initialization failed");
     FreeLibrary(impl_->adlDll);
     impl_->adlDll = nullptr;
     return false;
@@ -67,6 +74,7 @@ bool AMDMetrics::init(ID3D11Device*) {
 
   impl_->adlOk = true;
   impl_->adapterIndex = 0;  // First AMD GPU
+  log_message(LogLevel::Info, L"AMD ADL initialized");
   return true;
 }
 
