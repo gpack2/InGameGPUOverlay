@@ -28,11 +28,21 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.configuration }} --output-on-failure
 
-      - name: Upload binaries
+      - name: Package
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          $name = "GPUOverlay-windows-${{ matrix.platform }}"
+          New-Item -ItemType Directory -Path "build/package/$name" -Force
+          Copy-Item "build/Release/GPUOverlay.exe" "build/package/$name/"
+          Copy-Item "build/Release/GPUOverlayHook.dll" "build/package/$name/"
+          Copy-Item "GPUOverlay.ini" "build/package/$name/"
+          Copy-Item "README.md" "build/package/$name/"
+          Compress-Archive -Path "build/package/$name" -DestinationPath "build/package/$name.zip"
+
+      - name: Upload package
         if: matrix.configuration == 'Release'
         uses: actions/upload-artifact@v4
         with:
           name: GPUOverlay-windows-${{ matrix.platform }}
-          path: |
-            build/Release/GPUOverlay.exe
-            build/Release/GPUOverlayHook.dll
+          path: build/package/GPUOverlay-windows-${{ matrix.platform }}.zip
